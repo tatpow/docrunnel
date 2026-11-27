@@ -59,12 +59,6 @@ const DOCKER_PRESETS = [
   { label: "Ollama (11434)", url: "http://host.docker.internal:11434/v1" },
 ] as const;
 
-const BROWSER_PRESETS = [
-  { label: "LM Studio (1234)", url: "http://localhost:1234/v1" },
-  { label: "llama.cpp (8080)", url: "http://localhost:8080/v1" },
-  { label: "Ollama (11434)", url: "http://localhost:11434/v1" },
-] as const;
-
 const PROMPT_EXAMPLES = [
   "Извлеки номер договора и итоговую сумму, проверь формат суммы > 0, проблемные отправь на ручную проверку",
   "Извлеки из таблицы ИНН поставщика и дату договора с проверкой обязательности",
@@ -90,7 +84,6 @@ export function AIGraphDialog({
   onOpenChange,
   documents,
   selectedDocId,
-  browserPreview,
   query,
   onStatusChange,
   onApplyGraph,
@@ -100,14 +93,12 @@ export function AIGraphDialog({
   onOpenChange: (open: boolean) => void;
   documents: DocumentItem[];
   selectedDocId?: string;
-  browserPreview: boolean;
   query: <T>(path: string, body?: unknown) => Promise<T>;
   onStatusChange?: (status: LMStatus) => void;
   onApplyGraph: (name: string, graph: Graph) => void;
   onSaveGraph?: (name: string, graph: Graph) => Promise<void>;
 }) {
-  const presets = browserPreview ? BROWSER_PRESETS : DOCKER_PRESETS;
-  const [baseUrl, setBaseUrl] = useState(() => localStorage.getItem(STORAGE_URL) || (browserPreview ? "http://localhost:1234/v1" : "http://host.docker.internal:1234/v1"));
+  const [baseUrl, setBaseUrl] = useState(() => localStorage.getItem(STORAGE_URL) || "http://host.docker.internal:1234/v1");
   const [model, setModel] = useState(() => localStorage.getItem(STORAGE_MODEL) || "");
   const [saveKey, setSaveKey] = useState(() => localStorage.getItem(STORAGE_SAVE_KEY) === "1");
   const [apiKey, setApiKey] = useState(() => (localStorage.getItem(STORAGE_SAVE_KEY) === "1" ? localStorage.getItem(STORAGE_KEY) || "" : ""));
@@ -128,7 +119,7 @@ export function AIGraphDialog({
     if (selectedDocId && documents.some(d => d.id === selectedDocId)) {
       setDocId(selectedDocId);
     } else if (!docId || !documents.some(d => d.id === docId)) {
-      setDocId(documents[0]?.id ?? (browserPreview ? "demo-contract" : ""));
+      setDocId(documents[0]?.id ?? "");
     }
     if (!localStorage.getItem(STORAGE_URL)) {
       void query<AIConfigResponse>("/ai/config")
@@ -138,7 +129,7 @@ export function AIGraphDialog({
         })
         .catch(() => {});
     }
-  }, [open, documents, selectedDocId, browserPreview]);
+  }, [open, documents, selectedDocId]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_URL, baseUrl);
@@ -220,10 +211,6 @@ export function AIGraphDialog({
     }
   }
 
-  const effectiveDocs = browserPreview && !documents.length
-    ? [{ id: "demo-contract", name: "01-paragraph.docx (демо)", format: "docx" }]
-    : documents;
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="workspace-dialog ai-graph-dialog">
@@ -241,7 +228,7 @@ export function AIGraphDialog({
           <div className="ai-config-box">
             <div className="toolbar">
               <span className="muted">Локальный сервер:</span>
-              {presets.map(preset => (
+              {DOCKER_PRESETS.map(preset => (
                 <ActionButton
                   key={preset.label}
                   type="button"
@@ -321,8 +308,8 @@ export function AIGraphDialog({
 
           <FormField label="Файл-образец (PDF или DOCX)" help="Модель прочитает структуру файла и сразу проверит на нём созданную схему">
             <NativeSelect value={docId} onChange={event => setDocId(event.target.value)}>
-              {!effectiveDocs.length && <NativeSelectOption value="">Сначала загрузите файл в разделе «Документы»</NativeSelectOption>}
-              {effectiveDocs.map(doc => (
+              {!documents.length && <NativeSelectOption value="">Сначала загрузите файл в разделе «Документы»</NativeSelectOption>}
+              {documents.map(doc => (
                 <NativeSelectOption key={doc.id} value={doc.id}>
                   {doc.name} ({doc.format.toUpperCase()})
                 </NativeSelectOption>

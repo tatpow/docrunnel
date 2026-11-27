@@ -1,5 +1,5 @@
 import { strToU8, zipSync } from "fflate";
-import type { BranchRule, ExtractionField, Graph, SchemaNode, TableColumn } from "./live-graph";
+import { requiresServer, type BranchRule, type ExtractionField, type Graph, type SchemaNode, type TableColumn } from "./live-graph";
 import { DemoParseError, parseDocumentBytes, type BlockLocation, type ParsedBlock } from "./demo-parser";
 
 export type DemoFragment = {
@@ -293,6 +293,12 @@ export function prepareGraph(graph: Graph, requestedTarget?: string | null): Pre
     if (relevant.has(key)) {
       for (const p of parents[key]) relevant.add(p);
     }
+  }
+
+  const serverNodes = order.filter(key => (fullRun || relevant.has(key)) &&
+    requiresServer(nodes[key].type));
+  if (serverNodes.length) {
+    throw new DemoSchemaError("server_node", "DEMO_SERVER_REQUIRED", serverNodes);
   }
 
   const columns: Record<string, string[]> = {};

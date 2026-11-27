@@ -88,7 +88,7 @@ export function NodeCatalogPanel({
   onDragEndNode: () => void;
   onCreatePersonal: () => void;
   onEditPersonal: (node: PersonalNode) => void;
-  onCreateScript: () => void;
+  onCreateScript?: () => void;
   onEditScript: (node: ScriptNode) => void;
   onClose: () => void;
 }) {
@@ -310,7 +310,7 @@ export function NodeCatalogPanel({
           </TreeGroup>
         )}
 
-        {canAuthor && (
+        {canAuthor && onCreateScript && (
           <TreeGroup
             label="Программируемые"
             count={scriptItems.length}

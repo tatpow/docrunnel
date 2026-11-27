@@ -22,7 +22,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { WorkspaceShell, type WorkspaceSection } from "./workspace-shell";
 import { GraphControls, branchLabels, builtInSteps, nodeTypes, portLabels, useVerticalGraph, type BranchPort, type CatalogItem, type PortType } from "./graph";
-import { contractFields, fields, getExtractionFieldIssues, invalidExtractNodeIds, serializeGraph, useLiveGraph, type InsertLink, type PersonalNode, type ScriptNode, type TableColumn } from "./live-graph";
+import { contractFields, fields, getExtractionFieldIssues, invalidExtractNodeIds, requiresServer, serializeGraph, useLiveGraph, type InsertLink, type PersonalNode, type ScriptNode, type TableColumn } from "./live-graph";
 import { ScriptNodeEditor } from "./script-node-editor";
 import { PersonalNodeEditor } from "./personal-node-editor";
 import { AIGraphDialog, type LMStatus } from "./ai-graph-dialog";
@@ -63,6 +63,7 @@ const reviewLabels: Record<string, string> = {
 const issues: Record<string, string> = { missing: "Не найдено", invalid: "Неверный формат", ambiguous: "Несколько значений", NO_TEXT_LAYER: "Без текстового слоя", CORRUPT_FILE: "Повреждённый файл", ENCRYPTED: "Файл защищён паролем", PARSE_LIMIT: "Файл превышает лимит объёма разбора", UNSUPPORTED_FORMAT: "Неподдерживаемый формат", FILE_TOO_LARGE: "Файл превышает 20 МБ", DEMO_FILE_LIMIT: "В веб-демо можно загрузить до 3 файлов. Удалите лишний файл, чтобы загрузить новый", SCRIPT_DEMO_UNSUPPORTED: "Выполнение Starlark-узлов доступно в локальной версии Docker", document_in_use: "Документ используется в текущем запуске", account_exists: "Такой логин уже используется", account_link: "Ссылка недействительна или уже использована" };
 
 const nodeErrorLabels: Record<string, string> = {
+  server_node: "Требуется Docker",
   fields: "Проверьте поля",
   required_input: "Подключите вход",
   input_count: "Лишняя связь на входе",
@@ -121,6 +122,7 @@ async function api<T>(path: string, options: { body?: unknown; session?: Session
 function message(error: unknown) {
   if (!(error instanceof ApiError)) return "Сервер недоступен. Повторите попытку";
   if (error.detailMessage) return error.detailMessage;
+  if (error.code === "DEMO_SERVER_REQUIRED") return "Эта функция доступна в локальной Docker-версии";
   if (error.code === "rate_limited") return "Слишком много попыток входа. Повторите через несколько минут";
   const reasons: Record<string, string> = {
     port_type: "Соедините порты одного типа", cycle: "В схеме есть цикл", edge: "Проверьте концы связи и удалите повторы",
@@ -309,7 +311,8 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
   const refresh = () => Promise.all([query<DocumentRecord[]>("/documents").then(setDocuments), query<Version[]>("/workflows").then(setWorkflows), query<Run[]>("/runs").then(setRuns)]);
   useEffect(() => { Promise.all([refresh(), query<CatalogItem[]>("/workflows/catalog").then(setCatalog)]).catch(failure); }, []);
   useEffect(() => { if (canAuthor) void Promise.all([
-    query<PersonalNode[]>("/personal-nodes").then(setPersonal), query<ScriptNode[]>("/script-nodes").then(setScripts),
+    query<PersonalNode[]>("/personal-nodes").then(setPersonal),
+    !browserPreview && query<ScriptNode[]>("/script-nodes").then(setScripts),
   ]).catch(failure); }, [canAuthor]);
   useEffect(() => {
     if (!run) return;
@@ -525,11 +528,11 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
         lmStatus={lmStatus}
         canSaveDraft={!busy && !!name.trim() && !(version?.draft && !dirty)}
         canSaveVersion={!busy && !!name.trim() && !!nodes.length && (dirty || !!version?.draft)}
-        canRunBatch={!!version && !version.draft} onOpenSearch={() => openPicker()} onOpenAiGraph={() => setAiOpen(true)}
+        canRunBatch={!!version && !version.draft} onOpenSearch={() => openPicker()} onOpenAiGraph={browserPreview ? undefined : () => setAiOpen(true)}
         onSaveDraft={() => void action(() => save(true))} onSaveVersion={() => void action(() => save(false))}
         onRunPreviewQuick={() => chosen.length ? void action(() => start(true)) : setRunSetup({ preview: true })}
         onRunBatchQuick={() => chosen.length ? void action(() => start(false)) : setRunSetup({ preview: false })} />
-      {browserPreview && <Alert className="live-alert">Веб-демо: всё работает прямо в браузере без входа и сервера. Можно загрузить до 3 файлов PDF/DOCX для проверки схем, цитат и выгрузки CSV/JSON/XLSX. Starlark и серверная очередь — в локальном Docker.</Alert>}
+      {browserPreview && <Alert className="live-alert">Веб-демо обрабатывает до 3 файлов PDF/DOCX в браузере и выгружает результаты в CSV, JSON и XLSX. AI-генерация, Starlark и связанные узлы доступны в локальной Docker-версии.</Alert>}
       {error && <Alert variant="destructive" className="message live-alert">{error}</Alert>}
       <div className="editor live-editor" data-catalog={Boolean(leftPanel)} data-inspector={inspectorOpen}
         style={{ "--studio-left-width": ui.leftWidth + "px", "--studio-inspector-width": ui.inspectorWidth + "px" } as React.CSSProperties}>
@@ -545,7 +548,8 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
           onDragStartNode={(kind, personal, script) => { draggedKind.current = { kind, personal, script }; }}
           onDragEndNode={() => { draggedKind.current = undefined; }}
           onCreatePersonal={() => setEditing("new")} onEditPersonal={setEditing}
-          onCreateScript={() => setEditingScript("new")} onEditScript={setEditingScript} onClose={() => patch({ leftPanel: null })} />}
+          onCreateScript={browserPreview ? undefined : () => setEditingScript("new")}
+          onEditScript={setEditingScript} onClose={() => patch({ leftPanel: null })} />}
         {leftPanel === "documents" && <DocumentsContextPanel documents={documents} chosen={chosen} selectedDocId={documentDetails?.id}
           busy={busy} browserPreview={browserPreview} onUpload={files => void action(() => upload(files))}
           onToggleChoose={toggleDocument} onDeleteDoc={setDeletingDoc} onSelectDoc={doc => {
@@ -573,6 +577,7 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
         }}>
         <ReactFlow key={activeTab.tabId} defaultViewport={activeTab.viewport} nodes={nodes.map(node => {
           const spec = editor.ports(node.data.schema.type);
+          const serverOnly = browserPreview && requiresServer(node.data.schema.type);
           const missingInput = node.data.schema.script_definition
             ? Object.keys(node.data.schema.script_definition.inputs).some(port => !edges.some(link => link.target === node.id && link.targetHandle === port))
             : spec?.inputs
@@ -581,13 +586,13 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
           const serverError = errorNodes[node.id];
           const nodeError = serverError?.reason === "fields" && node.data.schema.type === "extract"
             ? (getExtractionFieldIssues(node.data.schema.fields).nodeError ?? "")
-            : (serverError?.label ?? "");
+            : (serverError?.label ?? (serverOnly ? nodeErrorLabels.server_node : ""));
           return { ...node, data: { ...node.data, vertical, active: node.id === active,
             title: editor.nodeLabel(node), instance: node.id.startsWith(`${node.data.schema.type}-`) ? node.id.split("-").at(-1) : undefined,
             ports: spec, named: node.data.schema.script_definition, toggle: editor.toggle, missingInput, nodeError,
             actions: {
               onDuplicate: (id: string) => setError(editor.duplicate(id)),
-              canDuplicate: !busy && nodes.length < 24,
+              canDuplicate: !serverOnly && !busy && nodes.length < 24,
             } } };
         })}
           edges={edges.map(link => {
@@ -756,12 +761,11 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
           </div>)}{!pickerChoices.length && <p className="muted">Подходящие узлы не найдены</p>}</div>
         </DialogContent>
       </Dialog>
-      <AIGraphDialog
+      {!browserPreview && <AIGraphDialog
         open={aiOpen}
         onOpenChange={setAiOpen}
         documents={documents}
         selectedDocId={documentDetails?.id ?? chosen[0]}
-        browserPreview={browserPreview}
         query={query}
         onStatusChange={setLmStatus}
         onApplyGraph={(workflowName, generatedGraph) => {
@@ -778,7 +782,7 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
           setInspectorOpen(true);
           await refresh();
         }}
-      />
+      />}
       <Dialog open={templatesOpen} onOpenChange={setTemplatesOpen}><DialogContent className="workspace-dialog">
         <DialogHeader><DialogTitle>Шаблоны схем</DialogTitle><DialogDescription>Начните с готового графа обработки.</DialogDescription></DialogHeader>
         <Input type="search" aria-label="Поиск шаблонов" placeholder="Поиск шаблонов" value={templateSearch} onChange={event => setTemplateSearch(event.target.value)} />

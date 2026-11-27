@@ -25,6 +25,11 @@ export type SchemaNode = { id: string; type: NodeKind; position?: XYPosition; fi
   table_columns?: string[]; personal_version?: string; personal_definition?: PersonalDefinition; rules?: BranchRule[]; deduplicate_by?: string;
   script_version?: string; script_definition?: ScriptDefinition; script_params?: Record<string, string> };
 export type Graph = { format_version: number; nodes: SchemaNode[]; edges: ([string, string] | [string, string, string] | [string, string, string | null, string])[] };
+
+export function requiresServer(type: NodeKind): boolean {
+  return type === "script" || type === "assemble" || type === "table";
+}
+
 export type EditorNode = Node<{ index: number; expanded: boolean; schema: SchemaNode }, "step">;
 
 export type GraphDiagnostic = {
