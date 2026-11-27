@@ -7,7 +7,7 @@ import { BUILTIN_TEMPLATES } from "./templates";
 import { createEmptyTab, type WorkflowTab, type WorkflowVersionRef } from "./workflow-tabs";
 import { useWorkspaceUiState } from "./workspace-state";
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { ArrowSquareOut, CaretLeft, CaretRight, Lock, X } from "@phosphor-icons/react";
+import { ArrowSquareOut, CaretLeft, CaretRight, Lock, Trash, X } from "@phosphor-icons/react";
 import { Pagination, PaginationContent, PaginationItem, PaginationLink } from "./components/ui/pagination";
 import { Background, MarkerType, ReactFlow, type ReactFlowInstance, type XYPosition } from "@xyflow/react";
 import { ActionButton, FormField } from "./control-help";
@@ -22,9 +22,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { WorkspaceShell, type WorkspaceSection } from "./workspace-shell";
 import { GraphControls, branchLabels, builtInSteps, nodeTypes, portLabels, useVerticalGraph, type BranchPort, type CatalogItem, type PortType } from "./graph";
-import { contractFields, fields, serializeGraph, useLiveGraph, type InsertLink, type PersonalNode, type ScriptNode, type TableColumn } from "./live-graph";
+import { contractFields, fields, getExtractionFieldIssues, invalidExtractNodeIds, serializeGraph, useLiveGraph, type InsertLink, type PersonalNode, type ScriptNode, type TableColumn } from "./live-graph";
 import { ScriptNodeEditor } from "./script-node-editor";
 import { PersonalNodeEditor } from "./personal-node-editor";
+import { AIGraphDialog, type LMStatus } from "./ai-graph-dialog";
 import { BranchSettings, ColumnSettings, ExtractionSettings } from "./field-settings";
 import { ThemeButton } from "./workspace-shell";
 import { Input } from "./components/ui/input";
@@ -59,10 +60,33 @@ const reviewLabels: Record<string, string> = {
   TABLE_MISSING: "Таблица не найдена", TABLE_INCOMPLETE: "В таблице есть неполные или спорные строки",
   TABLE_AMBIGUOUS: "Найдено несколько конкурирующих таблиц", TABLE_INVALID: "Некорректная структура таблицы",
 };
-const issues: Record<string, string> = { missing: "Не найдено", invalid: "Неверный формат", ambiguous: "Несколько значений", NO_TEXT_LAYER: "Без текстового слоя", CORRUPT_FILE: "Повреждённый файл", UNSUPPORTED_FORMAT: "Неподдерживаемый формат", FILE_TOO_LARGE: "Файл превышает 20 МБ", account_exists: "Такой логин уже используется", account_link: "Ссылка недействительна или уже использована" };
+const issues: Record<string, string> = { missing: "Не найдено", invalid: "Неверный формат", ambiguous: "Несколько значений", NO_TEXT_LAYER: "Без текстового слоя", CORRUPT_FILE: "Повреждённый файл", ENCRYPTED: "Файл защищён паролем", PARSE_LIMIT: "Файл превышает лимит объёма разбора", UNSUPPORTED_FORMAT: "Неподдерживаемый формат", FILE_TOO_LARGE: "Файл превышает 20 МБ", DEMO_FILE_LIMIT: "В веб-демо можно загрузить до 3 файлов. Удалите лишний файл, чтобы загрузить новый", SCRIPT_DEMO_UNSUPPORTED: "Выполнение Starlark-узлов доступно в локальной версии Docker", document_in_use: "Документ используется в текущем запуске", account_exists: "Такой логин уже используется", account_link: "Ссылка недействительна или уже использована" };
+
+const nodeErrorLabels: Record<string, string> = {
+  fields: "Проверьте поля",
+  required_input: "Подключите вход",
+  input_count: "Лишняя связь на входе",
+  port_type: "Несовместимые порты",
+  cycle: "Цикл в схеме",
+  edge: "Ошибка связи",
+  export_count: "Оставьте один экспорт",
+  review_count: "Оставьте одну проверку",
+  branch_rules: "Проверьте условия",
+  review_required: "Подключите «На проверку»",
+  pass_required: "Подключите «Годные»",
+  export_columns: "Проверьте столбцы",
+  table_columns: "Проверьте столбцы таблицы",
+  deduplicate_field: "Проверьте ключ дублей",
+  personal_input: "Нет входного поля",
+  assemble_fields: "Повтор ключей полей",
+  combine_columns: "Несовместимые поля",
+  script_parameters: "Неизвестные параметры",
+};
 
 class ApiError extends Error {
-  constructor(readonly status: number, readonly code?: string, readonly reason?: string) { super(code); }
+  constructor(readonly status: number, readonly code?: string, readonly reason?: string, readonly nodes?: string[], readonly detailMessage?: string) {
+    super(detailMessage || code);
+  }
 }
 
 async function api<T>(path: string, options: { body?: unknown; session?: Session; signal?: AbortSignal } = {}): Promise<T> {
@@ -76,13 +100,28 @@ async function api<T>(path: string, options: { body?: unknown; session?: Session
         body: data instanceof FormData ? data : data === undefined ? undefined : JSON.stringify(data), signal: options.signal });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new ApiError(response.status, typeof payload.detail === "string" ? payload.detail : payload.detail?.code, payload.detail?.reason);
+    const detail = payload.detail;
+    const errorNodes = Array.isArray(detail?.nodes)
+      ? detail.nodes.filter((id: unknown): id is string => typeof id === "string")
+      : undefined;
+    const fieldValidation = Array.isArray(detail) && detail.some(
+      (item: { loc?: unknown }) => Array.isArray(item?.loc) && item.loc.includes("fields"),
+    );
+    throw new ApiError(
+      response.status,
+      typeof detail === "string" ? detail : detail?.code ?? (fieldValidation ? "SCHEMA_INVALID" : undefined),
+      detail?.reason ?? (fieldValidation ? "fields" : undefined),
+      errorNodes,
+      typeof detail?.message === "string" ? detail.message : undefined,
+    );
   }
   return response.status === 204 ? undefined as T : response.json();
 }
 
 function message(error: unknown) {
   if (!(error instanceof ApiError)) return "Сервер недоступен. Повторите попытку";
+  if (error.detailMessage) return error.detailMessage;
+  if (error.code === "rate_limited") return "Слишком много попыток входа. Повторите через несколько минут";
   const reasons: Record<string, string> = {
     port_type: "Соедините порты одного типа", cycle: "В схеме есть цикл", edge: "Проверьте концы связи и удалите повторы",
     required_input: "Подключите обязательные входы узлов", input_count: "На одном из входов допустима только одна связь",
@@ -151,7 +190,7 @@ function LiveSession() {
   }
 
   if (session && !token) return <Workspace session={session} onEnd={() => setSession(undefined)} />;
-  return <><header className="workspace-header"><div className="brand"><img src="/brand.png" alt="DocRunnel" /></div><div className="workspace-actions"><ThemeButton /></div></header><main className="signin"><Card className="signin-card"><h1>{token ? "Установить пароль" : "Вход в DocRunnel"}</h1>
+  return <><header className="workspace-header"><div className="brand"><img src={`${import.meta.env.BASE_URL}brand.png`} alt="DocRunnel" /></div><div className="workspace-actions"><ThemeButton /></div></header><main className="signin"><Card className="signin-card"><h1>{token ? "Установить пароль" : "Вход в DocRunnel"}</h1>
     {loading ? <p role="status">Проверяем сессию…</p> : <form key={token ?? "login"} onSubmit={authenticate}>
       {!token && <FormField label="Логин" help="Имя выданной вам учётной записи"><Input name="account" required autoComplete="username" /></FormField>}
       <FormField label="Пароль" help={token ? "Введите новый пароль из 12 символов или больше" : "Пароль вашей учётной записи"}><Input name="password" type="password" required minLength={token ? 12 : undefined} autoComplete={token ? "new-password" : "current-password"} /></FormField>
@@ -172,8 +211,11 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
   const [inactiveTabs, setInactiveTabs] = useState<WorkflowTab[]>([]);
   const [order, setOrder] = useState<string[]>([]);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [lmStatus, setLmStatus] = useState<LMStatus>({ connected: false });
   const [templateSearch, setTemplateSearch] = useState("");
   const [documentDetails, setDocumentDetails] = useState<DocumentRecord>();
+  const [deletingDoc, setDeletingDoc] = useState<DocumentRecord>();
   const [runSetup, setRunSetup] = useState<{ preview: boolean; node?: string }>();
   const settingsId = useId();
   const inspectorToggleRef = useRef<HTMLButtonElement>(null);
@@ -181,7 +223,8 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
   const [pickerSearch, setPickerSearch] = useState("");
   const [pickerError, setPickerError] = useState("");
   const [savedDraft, setSavedDraft] = useState(emptyDraft);
-  const flow = useRef<ReactFlowInstance | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const flow = useRef<ReactFlowInstance<any, any> | null>(null);
   const reconnecting = useRef<string | undefined>(undefined);
   const draggedKind = useRef<{ kind: typeof builtInSteps[number]["type"] | "personal" | "script"; personal?: PersonalNode; script?: ScriptNode }>(undefined);
   const canAuthor = session.role === "editor" || session.role === "admin";
@@ -204,6 +247,7 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
   const [report, setReport] = useState<Report>();
   const [source, setSource] = useState<{ key: string; file: string; name: string; fragments: Fragment[] }>();
   const [error, setError] = useState("");
+  const [errorNodes, setErrorNodes] = useState<Record<string, { reason?: string; label: string }>>({});
   const [busy, setBusy] = useState(false);
   const query = <T,>(path: string, body?: unknown) => api<T>(path, { body, session });
   const graph = editor.serialize;
@@ -231,11 +275,34 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
   const hasTabularResults = Boolean(report?.rows.some(row => row.table));
 
   function failure(error: unknown) {
-    if (error instanceof ApiError && error.status === 401) onEnd();
-    else setError(message(error));
+    if (error instanceof ApiError && error.status === 401) {
+      onEnd();
+      return;
+    }
+    if (error instanceof ApiError) {
+      const affected = new Set<string>(error.nodes ?? []);
+      if (error.reason === "fields") {
+        for (const id of invalidExtractNodeIds(nodes)) affected.add(id);
+      }
+      if (affected.size) {
+        const label = nodeErrorLabels[error.reason ?? ""] ?? "Ошибка настройки";
+        setErrorNodes(Object.fromEntries(Array.from(affected, id => [id, { reason: error.reason, label }])));
+      } else {
+        setErrorNodes({});
+      }
+    }
+    setError(message(error));
+  }
+  function clearNodeError(id: string) {
+    setErrorNodes(current => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
   }
   async function action(work: () => Promise<void>) {
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setErrorNodes({});
     try { await work(); } catch (error) { failure(error); }
     finally { setBusy(false); }
   }
@@ -264,7 +331,7 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
     if (id) patch({ resultsOpen: true });
     if (id === run) return;
     setReport(undefined); setSource(undefined); setRun(id);
-    history.replaceState(null, "", id ? `?run=${encodeURIComponent(id)}` : location.pathname);
+    if (!browserPreview) history.replaceState(null, "", id ? `?run=${encodeURIComponent(id)}` : location.pathname);
   }
 
   async function upload(files: FileList) {
@@ -275,6 +342,25 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
     setChosen(current => [...current, ...entries.flatMap(entry => entry.id ? [entry.id] : [])]);
     const rejected = entries.filter(entry => entry.error).map(entry => `${entry.name ?? "Файл"} — ${issues[entry.error!] ?? entry.error}`);
     if (rejected.length) setError(rejected.join("\n"));
+  }
+
+  async function openDemoOriginal(docId: string) {
+    const { getDemoDocumentUrl } = await import("./preview-data");
+    const url = getDemoDocumentUrl(docId);
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  async function exportDemoFile(runId: string, format: "csv" | "json" | "xlsx") {
+    const { downloadDemoRunExport } = await import("./preview-data");
+    downloadDemoRunExport(runId, format);
+  }
+
+  async function deleteDocument(doc: DocumentRecord) {
+    await query(`/documents/${doc.id}/delete`, {});
+    setChosen(current => current.filter(id => id !== doc.id));
+    setDocumentDetails(current => current?.id === doc.id ? undefined : current);
+    setSource(current => current?.key === doc.id ? undefined : current);
+    await refresh();
   }
 
   async function start(preview: boolean, inspected?: string) {
@@ -310,7 +396,7 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
 
   function activate(tab: WorkflowTab) {
     setActiveTab(tab); setName(tab.name); setVersion(tab.version); setSavedDraft(tab.savedDraft);
-    setDocumentDetails(undefined); setError("");
+    setDocumentDetails(undefined); setError(""); setErrorNodes({});
     editor.replaceState(tab.nodes, tab.edges, tab.activeNodeId);
   }
 
@@ -364,33 +450,86 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
     await refresh();
   }
 
+  function exportSchemaJson() {
+    const safeName = (name.trim() || "схема").replace(/[\\/:*?"<>|]+/g, "_").slice(0, 60);
+    const payload = {
+      schema_format: "docrunnel-workflow-v1",
+      name: name.trim() || emptySchemeName,
+      exported_at: new Date().toISOString(),
+      graph: graph(),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `схема_${safeName}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function importSchemaJson(file: File) {
+    setError("");
+    try {
+      const parsed = JSON.parse(await file.text()) as { name?: unknown; graph?: ReturnType<typeof graph> };
+      const importedGraph = parsed?.graph;
+      if (!importedGraph || !Array.isArray(importedGraph.nodes) || !Array.isArray(importedGraph.edges)) {
+        setError("Некорректный JSON-файл схемы: отсутствуют узлы или связи.");
+        return;
+      }
+      const importedName = typeof parsed.name === "string" && parsed.name.trim()
+        ? parsed.name.trim().slice(0, 80)
+        : file.name.replace(/\.json$/i, "").slice(0, 80) || emptySchemeName;
+      openTab(createEmptyTab(importedName), importedGraph);
+    } catch {
+      setError("Не удалось прочитать JSON-файл схемы.");
+    }
+  }
+
   function toggleInspector() {
     setInspectorOpen(!inspectorOpen);
     requestAnimationFrame(() => inspectorToggleRef.current?.focus());
   }
 
+  async function syncRunsAfterClear() {
+    const nextRuns = await query<Run[]>("/runs");
+    setRuns(nextRuns);
+    if (run && !nextRuns.some(item => item.id === run)) selectRun("");
+  }
+
+  async function handleWorkflowDeleted(workflowId: string) {
+    if (version?.id === workflowId) {
+      setVersion(undefined);
+      setSavedDraft("");
+    }
+    setInactiveTabs(tabs => tabs.map(tab => tab.version?.id === workflowId ? { ...tab, version: undefined, savedDraft: "" } : tab));
+    await refresh();
+  }
+
   return <WorkspaceShell account={session.id} admin={admin} canAdmin={!browserPreview && session.role === "admin"} changeView={setAdmin} demo={browserPreview}
-    section={leftPanel ?? (resultsOpen ? "runs" : undefined)} onSection={navigate}
+    leftPanel={leftPanel} resultsOpen={resultsOpen} onSection={navigate}
     topBarContent={<WorkflowTabsBar tabs={[...inactiveTabs, snapshot()].sort((a, b) => order.indexOf(a.tabId) - order.indexOf(b.tabId)).map(tab => ({
       tabId: tab.tabId, name: tab.name, dirty: changed(tab), versionLabel: tab.version?.draft ? "Черновик" : tab.version ? "v" + (tab.version.version ?? 1) : undefined,
     }))} activeTabId={activeTab.tabId} busy={busy} onSelectTab={changeTab} onCloseTab={closeTab}
       onNewTab={() => openTab(createEmptyTab())} onRenameActive={setName}
-      onOpenTemplates={() => { setTemplateSearch(""); setTemplatesOpen(true); }} />}
+      onOpenTemplates={() => { setTemplateSearch(""); setTemplatesOpen(true); }}
+      onExportJson={exportSchemaJson} onImportJson={file => void importSchemaJson(file)} />}
     changePassword={browserPreview ? undefined : async (current_password, password) => {
       try { await query("/session/change-password", { current_password, password }); }
       catch (error) { throw new Error(error instanceof ApiError && error.code === "current_password" ? "Текущий пароль неверен" : message(error)); }
     }}
     signOut={browserPreview ? undefined : () => void action(async () => { await query("/session/logout", {}); history.replaceState(null, "", location.pathname); onEnd(); })}>
-    {admin && !browserPreview ? <Admin session={session} failure={failure} workflows={workflows} /> : <div className="main live-workspace">
+    {admin && !browserPreview ? <Admin session={session} failure={failure} workflows={workflows} onRefresh={refresh}
+      onWorkflowDeleted={handleWorkflowDeleted} onRunsCleared={syncRunsAfterClear} /> : <div className="main live-workspace">
       <GraphToolbar busy={busy} browserPreview={browserPreview} hasNodes={Boolean(nodes.length)} chosenCount={chosen.length}
         dirty={dirty} draftStatusLabel={dirty ? "Есть несохранённые изменения" : version?.draft ? "Черновик сохранён" : version ? "Схема сохранена" : "Пустая схема"}
+        lmStatus={lmStatus}
         canSaveDraft={!busy && !!name.trim() && !(version?.draft && !dirty)}
         canSaveVersion={!busy && !!name.trim() && !!nodes.length && (dirty || !!version?.draft)}
-        canRunBatch={!!version && !version.draft} onOpenSearch={() => openPicker()}
+        canRunBatch={!!version && !version.draft} onOpenSearch={() => openPicker()} onOpenAiGraph={() => setAiOpen(true)}
         onSaveDraft={() => void action(() => save(true))} onSaveVersion={() => void action(() => save(false))}
         onRunPreviewQuick={() => chosen.length ? void action(() => start(true)) : setRunSetup({ preview: true })}
         onRunBatchQuick={() => chosen.length ? void action(() => start(false)) : setRunSetup({ preview: false })} />
-      {browserPreview && <Alert className="live-alert">Демо-режим (Vercel): без входа, паролей и серверной обработки. Схемы и узлы сохраняются только в этом браузере. Для работы с документами используйте локальный DocRunnel.</Alert>}
+      {browserPreview && <Alert className="live-alert">Веб-демо: всё работает прямо в браузере без входа и сервера. Можно загрузить до 3 файлов PDF/DOCX для проверки схем, цитат и выгрузки CSV/JSON/XLSX. Starlark и серверная очередь — в локальном Docker.</Alert>}
       {error && <Alert variant="destructive" className="message live-alert">{error}</Alert>}
       <div className="editor live-editor" data-catalog={Boolean(leftPanel)} data-inspector={inspectorOpen}
         style={{ "--studio-left-width": ui.leftWidth + "px", "--studio-inspector-width": ui.inspectorWidth + "px" } as React.CSSProperties}>
@@ -409,7 +548,7 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
           onCreateScript={() => setEditingScript("new")} onEditScript={setEditingScript} onClose={() => patch({ leftPanel: null })} />}
         {leftPanel === "documents" && <DocumentsContextPanel documents={documents} chosen={chosen} selectedDocId={documentDetails?.id}
           busy={busy} browserPreview={browserPreview} onUpload={files => void action(() => upload(files))}
-          onToggleChoose={toggleDocument} onSelectDoc={doc => {
+          onToggleChoose={toggleDocument} onDeleteDoc={setDeletingDoc} onSelectDoc={doc => {
             setDocumentDetails(doc); editor.setActive("");
             patch({ inspectorOpen: true, ...(vertical ? { leftPanel: null } : {}) });
           }}
@@ -439,9 +578,13 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
             : spec?.inputs
               ? Object.keys(spec.inputs).some(port => !spec.optional_inputs?.includes(port) && !edges.some(link => link.target === node.id && link.targetHandle === port))
               : Boolean(spec?.input && !edges.some(link => link.target === node.id));
+          const serverError = errorNodes[node.id];
+          const nodeError = serverError?.reason === "fields" && node.data.schema.type === "extract"
+            ? (getExtractionFieldIssues(node.data.schema.fields).nodeError ?? "")
+            : (serverError?.label ?? "");
           return { ...node, data: { ...node.data, vertical, active: node.id === active,
             title: editor.nodeLabel(node), instance: node.id.startsWith(`${node.data.schema.type}-`) ? node.id.split("-").at(-1) : undefined,
-            ports: spec, named: node.data.schema.script_definition, toggle: editor.toggle, missingInput,
+            ports: spec, named: node.data.schema.script_definition, toggle: editor.toggle, missingInput, nodeError,
             actions: {
               onDuplicate: (id: string) => setError(editor.duplicate(id)),
               canDuplicate: !busy && nodes.length < 24,
@@ -456,14 +599,14 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
           onNodesChange={editor.onNodesChange} onEdgesChange={editor.onEdgesChange} onNodeClick={(_, node) => { editor.setActive(node.id); setInspectorOpen(true); }}
           onNodeDoubleClick={(_, node) => editor.toggle(node.id)} zoomOnDoubleClick={false}
           onPaneClick={event => {
-            if (event.detail === 2) openPicker(flow.current?.screenToFlowPosition(event));
+            if (event.detail === 2) openPicker(flow.current?.screenToFlowPosition({ x: event.clientX, y: event.clientY }));
             else { editor.setActive(""); setDocumentDetails(undefined); }
           }}
-          onPaneContextMenu={event => { event.preventDefault(); openPicker(flow.current?.screenToFlowPosition(event)); }}
+          onPaneContextMenu={event => { event.preventDefault(); openPicker(flow.current?.screenToFlowPosition({ x: event.clientX, y: event.clientY })); }}
           onInit={instance => { flow.current = instance; }}
-          onConnect={link => setError(editor.connect(link.source, link.target, undefined, link.sourceHandle, link.targetHandle))}
+          onConnect={link => { setError(editor.connect(link.source, link.target, undefined, link.sourceHandle, link.targetHandle)); clearNodeError(link.source); clearNodeError(link.target); }}
           onReconnectStart={(_, link) => { reconnecting.current = link.id; setError(""); }}
-          onReconnect={(link, next) => setError(editor.connect(next.source, next.target, link.id, next.sourceHandle, next.targetHandle))}
+          onReconnect={(link, next) => { setError(editor.connect(next.source, next.target, link.id, next.sourceHandle, next.targetHandle)); clearNodeError(next.source); clearNodeError(next.target); }}
           onReconnectEnd={(_, link, handle, state) => {
             reconnecting.current = undefined;
             if (state.isValid || !state.toNode) return;
@@ -485,7 +628,7 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
               const spec = editor.ports(schema?.type);
               const kind = fromOutput ? editor.outputType(schema, handle)
                 : schema?.script_definition?.inputs[handle ?? ""] ?? spec?.inputs?.[handle ?? ""] ?? spec?.input;
-              if (kind) openPicker(flow.current?.screenToFlowPosition(pointer), { nodeId: state.fromNode.id, fromOutput, handle }, kind);
+              if (kind) openPicker(flow.current?.screenToFlowPosition({ x: pointer.clientX, y: pointer.clientY }), { nodeId: state.fromNode.id, fromOutput, handle }, kind);
               return;
             }
             setError(fromOutput
@@ -513,29 +656,33 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
               ports.length > 0 && <div key={label}><h3>{label}</h3><ul>{ports.map((port, index) =>
                 <li key={port.name ?? index}>{port.name ? port.name + " · " : ""}{portLabels[port.type]}</li>)}</ul></div>)}
           </details>}
-          {selected && <ActionButton variant="outline" size="sm" disabled={browserPreview || !chosen.length || busy} onClick={() => void action(() => start(true, selected.id))}>Предпросмотр узла</ActionButton>}
+          {selected && <ActionButton variant="outline" size="sm" disabled={!chosen.length || busy} onClick={() => void action(() => start(true, selected.id))}>Предпросмотр узла</ActionButton>}
           {selected && selectedKind === "extract" && <>
-            <ExtractionSettings key={selected.id} value={selected.data.schema.fields ?? []} change={fields => editor.updateSchema(selected.id, { fields })} />
+            <ExtractionSettings key={selected.id} value={selected.data.schema.fields ?? []}
+              showErrors={Boolean(errorNodes[selected.id])}
+              change={fields => editor.updateSchema(selected.id, { fields })} />
             {!selected.data.schema.fields?.length && <ActionButton variant="ghost" size="sm"
               onClick={() => editor.updateSchema(selected.id, { fields: contractFields() })}>Добавить поля договора</ActionButton>}
           </>}
           {selected && selectedKind === "branch" && <BranchSettings rules={selected.data.schema.rules ?? []}
             columns={editor.upstreamColumns(selected.id)} hasTable={editor.upstreamTableColumns(selected.id).length > 0}
-            change={rules => editor.updateSchema(selected.id, { rules })} />}
+            change={rules => { editor.updateSchema(selected.id, { rules }); clearNodeError(selected.id); }} />}
           {selected && selectedKind === "table" && <ColumnSettings title="Столбцы таблицы" emptyText="Подключите источник таблицы ко входу table."
             available={editor.upstreamTableColumns(selected.id)} selected={selected.data.schema.table_columns}
-            change={table_columns => editor.updateSchema(selected.id, { table_columns })} />}
+            change={table_columns => { editor.updateSchema(selected.id, { table_columns }); clearNodeError(selected.id); }} />}
           {selected && selectedKind === "export" && <>
             {(editor.upstreamColumns(selected.id).length > 0 || !editor.upstreamTableColumns(selected.id).length) &&
               <ColumnSettings available={editor.upstreamColumns(selected.id)}
-                selected={selected.data.schema.columns} change={columns => editor.updateSchema(selected.id, { columns })} />}
+                selected={selected.data.schema.columns} change={columns => { editor.updateSchema(selected.id, { columns }); clearNodeError(selected.id); }} />}
             {editor.upstreamTableColumns(selected.id).length > 0 &&
               <ColumnSettings title="Столбцы таблицы" emptyText="Подключите узел таблицы."
                 available={editor.upstreamTableColumns(selected.id)} selected={selected.data.schema.table_columns}
-                change={table_columns => editor.updateSchema(selected.id, { table_columns })} />}
+                change={table_columns => { editor.updateSchema(selected.id, { table_columns }); clearNodeError(selected.id); }} />}
             <FormField label="Ключ дублей" help="Первая строка остаётся в выгрузке. Повторы идут на ручную проверку">
-              <NativeSelect value={selected.data.schema.deduplicate_by ?? ""} onChange={event =>
-                editor.updateSchema(selected.id, { deduplicate_by: event.target.value || undefined })}>
+              <NativeSelect value={selected.data.schema.deduplicate_by ?? ""} onChange={event => {
+                editor.updateSchema(selected.id, { deduplicate_by: event.target.value || undefined });
+                clearNodeError(selected.id);
+              }}>
                 <NativeSelectOption value="">Не искать дубли</NativeSelectOption>
                 {editor.upstreamColumns(selected.id).map(field => <NativeSelectOption key={field.id} value={field.id}>{field.name}</NativeSelectOption>)}
               </NativeSelect>
@@ -578,9 +725,12 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
               </ActionButton>;
             })}
           </>}
-          {selected && <ActionButton variant="ghost" onClick={() => { editor.remove(selected.id); setError(""); }}>Удалить узел</ActionButton>}
+          {selected && <ActionButton variant="ghost" onClick={() => { editor.remove(selected.id); clearNodeError(selected.id); setError(""); }}>Удалить узел</ActionButton>}
           {!selected && (documentDetails ? <div className="field-stack"><p>{documentDetails.format.toUpperCase()}</p>
-            <ActionButton variant="outline" asChild><a href={"/api/v1/documents/" + documentDetails.id + "/content"}>Открыть оригинал</a></ActionButton>
+            {browserPreview
+              ? <ActionButton variant="outline" onClick={() => void openDemoOriginal(documentDetails.id)}>Открыть оригинал</ActionButton>
+              : <ActionButton variant="outline" asChild><a href={"/api/v1/documents/" + documentDetails.id + "/content"}>Открыть оригинал</a></ActionButton>}
+            <ActionButton variant="ghost" disabled={busy} onClick={() => setDeletingDoc(documentDetails)}><Trash size={15} />Удалить документ</ActionButton>
             </div> : <div className="field-stack"><strong>{name}</strong>
               {editor.diagnostics().map((item, index) => <p key={index} className="muted">{item.text}</p>)}</div>)}
         </div></section></div>
@@ -606,6 +756,29 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
           </div>)}{!pickerChoices.length && <p className="muted">Подходящие узлы не найдены</p>}</div>
         </DialogContent>
       </Dialog>
+      <AIGraphDialog
+        open={aiOpen}
+        onOpenChange={setAiOpen}
+        documents={documents}
+        selectedDocId={documentDetails?.id ?? chosen[0]}
+        browserPreview={browserPreview}
+        query={query}
+        onStatusChange={setLmStatus}
+        onApplyGraph={(workflowName, generatedGraph) => {
+          openTab(createEmptyTab(workflowName), generatedGraph);
+          setInspectorOpen(true);
+        }}
+        onSaveGraph={async (workflowName, generatedGraph) => {
+          const item = await query<Omit<Version, "name">>("/workflows", {
+            name: workflowName,
+            graph: generatedGraph,
+            draft: false,
+          });
+          openTab({ ...createEmptyTab(workflowName), version: { ...item, name: workflowName } }, generatedGraph);
+          setInspectorOpen(true);
+          await refresh();
+        }}
+      />
       <Dialog open={templatesOpen} onOpenChange={setTemplatesOpen}><DialogContent className="workspace-dialog">
         <DialogHeader><DialogTitle>Шаблоны схем</DialogTitle><DialogDescription>Начните с готового графа обработки.</DialogDescription></DialogHeader>
         <Input type="search" aria-label="Поиск шаблонов" placeholder="Поиск шаблонов" value={templateSearch} onChange={event => setTemplateSearch(event.target.value)} />
@@ -614,20 +787,37 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
           <p className="muted">{template.categoryLabel} · {template.nodeCount} узлов · {template.formats}</p><p>{template.description}</p>
           <p className="muted">{template.outputType}</p>
           <ActionButton variant="outline" aria-label={"Использовать шаблон «" + template.name + "»"}
-            onClick={() => openTab(createEmptyTab(template.id === "builtin-contract" ? "Реквизиты договора" : template.name), template.buildGraph())}>Использовать шаблон</ActionButton>
+            onClick={() => openTab(createEmptyTab(template.id === "builtin-contract" ? "Реквизиты договора" : template.name), template.buildGraph?.())}>Использовать шаблон</ActionButton>
         </Card>)}</div>
       </DialogContent></Dialog>
       <Dialog open={Boolean(runSetup)} onOpenChange={open => { if (!open) setRunSetup(undefined); }}><DialogContent className="workspace-dialog run-dialog">
         <DialogHeader><DialogTitle>{runSetup?.preview ? "Документы для предпросмотра" : "Документы для запуска"}</DialogTitle>
           <DialogDescription>{name}</DialogDescription></DialogHeader>
         <DocumentsContextPanel embedded documents={documents} chosen={chosen} busy={busy} browserPreview={browserPreview}
-          onUpload={files => void action(() => upload(files))} onToggleChoose={toggleDocument} />
+          onUpload={files => void action(() => upload(files))} onToggleChoose={toggleDocument} onDeleteDoc={setDeletingDoc} />
         <ActionButton disabled={busy || !chosen.length} onClick={() => {
           if (!runSetup) return;
           setRunSetup(undefined);
           void action(() => start(runSetup.preview, runSetup.node));
         }}>{runSetup?.preview ? "Выполнить предпросмотр" : "Подтвердить запуск"}</ActionButton>
       </DialogContent></Dialog>
+      <AlertDialog open={Boolean(deletingDoc)} onOpenChange={open => { if (!open) setDeletingDoc(undefined); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Удалить документ «{deletingDoc?.name}»?</AlertDialogTitle>
+            <AlertDialogDescription>{browserPreview ? "Файл будет удалён из текущей сессии браузера." : "Файл будет удалён из списка и с сервера."}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={() => {
+              if (!deletingDoc) return;
+              const targetDoc = deletingDoc;
+              setDeletingDoc(undefined);
+              void action(() => deleteDocument(targetDoc));
+            }}>Удалить</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {editing && <PersonalNodeEditor node={editing === "new" ? undefined : editing} close={() => setEditing(undefined)}
         preview={async (expression, value) => {
           try { return (await query<{ value: string }>("/personal-nodes/preview", { expression, value })).value; }
@@ -651,17 +841,24 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
         <ActionButton variant="ghost" size="sm" onClick={() => patch({ resultsExpanded: !ui.resultsExpanded })}>{ui.resultsExpanded ? "Уменьшить панель" : "Расширить панель"}</ActionButton>
         <ActionButton variant="ghost" size="icon-sm" aria-label="Скрыть результаты" onClick={() => patch({ resultsOpen: false })}><X /></ActionButton>
         {runs.length > 0 && <FormField label="Открыть запуск" help="Выбрать предыдущий запуск и посмотреть его результаты"><NativeSelect value={run} onChange={event => selectRun(event.target.value)}><NativeSelectOption value="">Выберите запуск</NativeSelectOption>{runs.map(item => <NativeSelectOption key={item.id} value={item.id}>{item.created_at ? new Date(item.created_at).toLocaleString("ru-RU") : item.id.slice(0, 8)} · {states[item.state]}</NativeSelectOption>)}</NativeSelect></FormField>}
+        {runs.some(item => !["queued", "running"].includes(item.state)) && <AlertDialog>
+          <AlertDialogTrigger asChild><ActionButton variant="ghost" size="sm" disabled={busy}><Trash size={14} />Очистить историю</ActionButton></AlertDialogTrigger>
+          <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Очистить историю запусков?</AlertDialogTitle><AlertDialogDescription>Все ваши завершённые запуски будут удалены. Загруженные документы и схемы сохранятся.</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel>Отмена</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => void action(async () => { await query("/runs/clear", {}); await syncRunsAfterClear(); })}>Очистить</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+        </AlertDialog>}
         {report && !["queued", "running"].includes(report.state) && (!report.inspection || report.inspection.type === "export") &&
-          ["csv", "json", "xlsx"].map(format => <ActionButton key={format} variant="ghost" asChild><a href={`/api/v1/runs/${report.id}/export/${format}`}>{format.toUpperCase()}</a></ActionButton>)}
+          (["csv", "json", "xlsx"] as const).map(format => browserPreview
+            ? <ActionButton key={format} variant="ghost" onClick={() => void exportDemoFile(report.id, format)}>{format.toUpperCase()}</ActionButton>
+            : <ActionButton key={format} variant="ghost" asChild><a href={`/api/v1/runs/${report.id}/export/${format}`}>{format.toUpperCase()}</a></ActionButton>)}
       </div></div>
-      {!report ? <p className="empty">{run ? "Открываем запуск…" : browserPreview ? "В веб-демо обработка документов отключена. Запустите локальный DocRunnel через Docker." : "Запустите обработку, чтобы увидеть реквизиты и источники."}</p> : <>
+      {!report ? <p className="empty">{run ? "Открываем запуск…" : "Запустите обработку, чтобы увидеть реквизиты и источники."}</p> : <>
         <p className="run-status" role="status">{states[report.state]} · {report.total} файлов
           {report.schema_revision ? ` · Версия схемы ${report.schema_revision}` : report.target && !report.schema_version ? " · Черновик" : ""}
         </p>
         {report.inspection && <section className="field-stack node-inspection" aria-label="Предпросмотр выбранного узла">
           <h3>{builtInSteps.find(step => step.type === report.inspection?.type)?.label ?? (report.inspection.type === "script" ? "Starlark" : "Личный узел")} · {report.inspection.node}</h3>
           <details><summary>Входные данные</summary><pre>{JSON.stringify(report.inspection.inputs, null, 2)}</pre></details>
-          <details open={report.inspection.type !== "export" || undefined}><summary>Выходные данные</summary><pre>{JSON.stringify(report.inspection.output, null, 2)}</pre></details>
+          <details><summary>Выходные данные</summary><pre>{JSON.stringify(report.inspection.output, null, 2)}</pre></details>
         </section>}
         {report.rows.length > 0 && !hasTabularResults && <div className="table-scroll"><Table><TableHeader><TableRow><TableHead>Документ</TableHead>{resultFields.map(field => <TableHead key={field.id}>{field.name}</TableHead>)}</TableRow></TableHeader><TableBody>
           {report.rows.map(row => <TableRow key={row.position}><TableCell>{row.filename}</TableCell>{resultFields.map(field => {
@@ -734,7 +931,9 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
           {row.filename}{row.error.node && ` · ${row.error.node}`} · {issues[row.error.code] ?? row.error.code}{row.error.message && ` · ${row.error.message}`}
         </Alert>)}
       </>}
-      {source && <section className="source-fragment" aria-label="Исходный фрагмент"><div className="toolbar"><h3>{source.name} · {source.file}</h3><ActionButton variant="link" asChild><a href={`/api/v1/documents/${source.key}/content`}><ArrowSquareOut size={16} /> Оригинал</a></ActionButton><ActionButton variant="ghost" onClick={() => setSource(undefined)}>Закрыть</ActionButton></div>
+      {source && <section className="source-fragment" aria-label="Исходный фрагмент"><div className="toolbar"><h3>{source.name} · {source.file}</h3>{browserPreview
+        ? <ActionButton variant="link" onClick={() => void openDemoOriginal(source.key)}><ArrowSquareOut size={16} /> Оригинал</ActionButton>
+        : <ActionButton variant="link" asChild><a href={`/api/v1/documents/${source.key}/content`}><ArrowSquareOut size={16} /> Оригинал</a></ActionButton>}<ActionButton variant="ghost" onClick={() => setSource(undefined)}>Закрыть</ActionButton></div>
         {source.fragments.map((fragment, index) => <blockquote className="document-quote" key={index}><p>{fragment.locator.page ? `Страница ${fragment.locator.page}` : `Блок ${fragment.locator.path?.map(part => part + 1).join(".") ?? ""}`}</p><mark>{fragment.quote}</mark></blockquote>)}
       </section>}
       </section>
@@ -742,7 +941,14 @@ function Workspace({ session, onEnd }: { session: Session; onEnd: () => void }) 
   </WorkspaceShell>;
 }
 
-function Admin({ session, failure, workflows }: { session: Session; failure: (error: unknown) => void; workflows: Version[] }) {
+function Admin({ session, failure, workflows, onRefresh, onWorkflowDeleted, onRunsCleared }: {
+  session: Session;
+  failure: (error: unknown) => void;
+  workflows: Version[];
+  onRefresh: () => Promise<unknown>;
+  onWorkflowDeleted: (workflowId: string) => Promise<void>;
+  onRunsCleared: () => Promise<void>;
+}) {
   const [tab, setTab] = useState("Запуски");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -756,6 +962,7 @@ function Admin({ session, failure, workflows }: { session: Session; failure: (er
   const [selected, setSelected] = useState<string[]>([]);
   const pages = Math.max(1, Math.ceil(total / 10));
   const [events, setEvents] = useState<AuditItem[]>([]);
+  const hasFinishedJobs = jobs.some(job => !["queued", "running"].includes(job.state));
   const update = async () => {
     if (tab === "Пользователи") {
       const response = await api<{ items: Account[]; total: number; page: number }>(`/admin/users?page=${page}&q=${encodeURIComponent(queryText)}`);
@@ -776,7 +983,17 @@ function Admin({ session, failure, workflows }: { session: Session; failure: (er
   return <div className="main"><header className="page-head"><div><h1>Админ-панель</h1></div></header>
     <section className="admin-panel" aria-label="Управление"><Tabs value={tab} onValueChange={setTab}><TabsList aria-label="Разделы админ-панели">{["Запуски", "Пользователи", "Общие схемы", "Журнал"].map(item => <TabsTrigger key={item} value={item}>{item}</TabsTrigger>)}</TabsList><TabsContent value={tab}>
       {error && <Alert variant="destructive" className="message">{error}</Alert>}
-      {tab === "Запуски" && <><ActionButton variant="ghost" disabled={busy} onClick={() => void act(update)}>Обновить</ActionButton><div className="table-scroll"><Table><TableHeader><TableRow><TableHead>Запуск</TableHead><TableHead>Владелец</TableHead><TableHead>Состояние</TableHead></TableRow></TableHeader><TableBody>{jobs.map(job => <TableRow key={job.id}><TableCell>{job.id.slice(0, 8)}</TableCell><TableCell>{job.owner_id}</TableCell><TableCell>{states[job.state]} {job.state === "queued" && <ActionButton variant="ghost" disabled={busy} onClick={() => void act(async () => { await api(`/admin/runs/${job.id}/cancel`, { session, body: {} }); await update(); })}>Отменить</ActionButton>}</TableCell></TableRow>)}</TableBody></Table></div>{!jobs.length && !busy && <p className="empty">Запусков пока нет.</p>}</>}
+      {tab === "Запуски" && <>
+        <div className="toolbar mb-2">
+          <ActionButton variant="ghost" disabled={busy} onClick={() => void act(update)}>Обновить</ActionButton>
+          <AlertDialog>
+            <AlertDialogTrigger asChild><ActionButton variant="outline" size="sm" disabled={busy || !hasFinishedJobs}><Trash size={14} />Очистить историю</ActionButton></AlertDialogTrigger>
+            <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Очистить историю запусков?</AlertDialogTitle><AlertDialogDescription>Все завершённые запуски пользователей будут удалены. Активные запуски в очереди и в работе останутся.</AlertDialogDescription></AlertDialogHeader>
+            <AlertDialogFooter><AlertDialogCancel>Отмена</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => void act(async () => { await api("/admin/runs/clear", { session, body: {} }); await update(); await onRunsCleared(); })}>Очистить</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+          </AlertDialog>
+        </div>
+        <div className="table-scroll"><Table><TableHeader><TableRow><TableHead>Запуск</TableHead><TableHead>Владелец</TableHead><TableHead>Состояние</TableHead></TableRow></TableHeader><TableBody>{jobs.map(job => <TableRow key={job.id}><TableCell>{job.id.slice(0, 8)}</TableCell><TableCell>{job.owner_id}</TableCell><TableCell>{states[job.state]} {job.state === "queued" && <ActionButton variant="ghost" disabled={busy} onClick={() => void act(async () => { await api(`/admin/runs/${job.id}/cancel`, { session, body: {} }); await update(); })}>Отменить</ActionButton>}</TableCell></TableRow>)}</TableBody></Table></div>{!jobs.length && !busy && <p className="empty">Запусков пока нет.</p>}
+      </>}
       {tab === "Пользователи" && <>
         <form className="toolbar account-form" onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); void act(async () => {
           const result = await api<{ url: string }>("/admin/users", { session, body: Object.fromEntries(data) }); setLink(result.url); await update();
@@ -818,7 +1035,29 @@ function Admin({ session, failure, workflows }: { session: Session; failure: (er
           <PaginationItem><ActionButton variant="outline" disabled={busy || page >= pages} onClick={() => { setSelected([]); setPage(page + 1); }}>Далее</ActionButton></PaginationItem>
         </PaginationContent></Pagination>
       </>}
-      {tab === "Общие схемы" && (workflows.length ? <ul>{workflows.map(item => <li key={item.version_id} className="admin-row"><span>{item.name}</span>{item.published ? "Опубликована" : <ActionButton variant="outline" disabled={busy} onClick={() => void act(async () => { await api(`/workflows/versions/${item.version_id}/publish`, { session, body: {} }); location.reload(); })}>Опубликовать</ActionButton>}</li>)}</ul> : <p className="empty">Сохраните схему в рабочем месте, чтобы опубликовать её.</p>)}
-      {tab === "Журнал" && (events.length ? <div className="table-scroll"><Table><TableHeader><TableRow><TableHead>Время</TableHead><TableHead>Кто</TableHead><TableHead>Действие</TableHead><TableHead>Объект</TableHead></TableRow></TableHeader><TableBody>{events.map((event, index) => <TableRow key={index}><TableCell>{new Date(event.occurred_at).toLocaleString("ru-RU")}</TableCell><TableCell>{event.actor_id}</TableCell><TableCell>{event.action}</TableCell><TableCell>{event.target_id}</TableCell></TableRow>)}</TableBody></Table></div> : <p className="empty">Записей пока нет.</p>)}
+      {tab === "Общие схемы" && (workflows.length ? <ul>{workflows.map(item => <li key={item.version_id} className="admin-row">
+        <span>{item.name}</span>
+        <div className="toolbar">
+          {item.published
+            ? <span className="muted">Опубликована</span>
+            : <ActionButton variant="outline" size="sm" disabled={busy} onClick={() => void act(async () => { await api(`/workflows/versions/${item.version_id}/publish`, { session, body: {} }); await onRefresh(); })}>Опубликовать</ActionButton>}
+          <AlertDialog>
+            <AlertDialogTrigger asChild><ActionButton variant="ghost" size="sm" disabled={busy}><Trash size={14} />Удалить</ActionButton></AlertDialogTrigger>
+            <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Удалить схему «{item.name}»?</AlertDialogTitle><AlertDialogDescription>Все версии схемы будут удалены. Сохранённые результаты прошлых запусков останутся.</AlertDialogDescription></AlertDialogHeader>
+            <AlertDialogFooter><AlertDialogCancel>Отмена</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => void act(async () => { await api(`/workflows/${item.id}/delete`, { session, body: {} }); await onWorkflowDeleted(item.id); })}>Удалить</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+          </AlertDialog>
+        </div>
+      </li>)}</ul> : <p className="empty">Сохраните схему в рабочем месте, чтобы опубликовать её.</p>)}
+      {tab === "Журнал" && <>
+        <div className="toolbar mb-2">
+          <ActionButton variant="ghost" disabled={busy} onClick={() => void act(update)}>Обновить</ActionButton>
+          <AlertDialog>
+            <AlertDialogTrigger asChild><ActionButton variant="outline" size="sm" disabled={busy || !events.length}><Trash size={14} />Очистить журнал</ActionButton></AlertDialogTrigger>
+            <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Очистить журнал?</AlertDialogTitle><AlertDialogDescription>Все записи журнала действий будут безвозвратно удалены.</AlertDialogDescription></AlertDialogHeader>
+            <AlertDialogFooter><AlertDialogCancel>Отмена</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => void act(async () => { await api("/admin/audit/clear", { session, body: {} }); await update(); })}>Очистить</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+          </AlertDialog>
+        </div>
+        {events.length ? <div className="table-scroll"><Table><TableHeader><TableRow><TableHead>Время</TableHead><TableHead>Кто</TableHead><TableHead>Действие</TableHead><TableHead>Объект</TableHead></TableRow></TableHeader><TableBody>{events.map((event, index) => <TableRow key={index}><TableCell>{new Date(event.occurred_at).toLocaleString("ru-RU")}</TableCell><TableCell>{event.actor_id}</TableCell><TableCell>{event.action}</TableCell><TableCell>{event.target_id}</TableCell></TableRow>)}</TableBody></Table></div> : !busy && <p className="empty">Записей пока нет.</p>}
+      </>}
     </TabsContent></Tabs></section></div>;
 }

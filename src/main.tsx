@@ -69,7 +69,11 @@ function DemoWorkspace({ account, signOut }: { account: string; signOut: () => v
       setError("Такая связь уже есть");
       return;
     }
-    setEdges(current => [...current, { id: source + "-" + target, source, target }]);
+    setEdges(current => [...current, {
+      id: source + "-" + target,
+      source: source as (typeof current)[number]["source"],
+      target: target as (typeof current)[number]["target"],
+    }]);
     setError("");
     setNotice("Связь создана");
   }

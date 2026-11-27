@@ -3,7 +3,8 @@ import { defineConfig } from "vite";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
+  base: mode === "vercel" ? "./" : "/",
   plugins: [tailwindcss(), {
     name: "docrunnel-license-notices",
     generateBundle() {
@@ -17,4 +18,4 @@ export default defineConfig({
   }],
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   esbuild: { jsx: "automatic" },
-});
+}));

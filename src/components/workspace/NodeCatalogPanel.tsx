@@ -250,7 +250,7 @@ export function NodeCatalogPanel({
             label="Избранное"
             count={favoriteItems.length}
             search=""
-            open={expandedCategories["fav"] ?? true}
+            open={expandedCategories["fav"] ?? false}
             onOpenChange={open => onSetCategoryOpen("fav", open)}
           >
             <ul className="catalog-items-list">{favoriteItems.map(item => renderNodeRow(item, true))}</ul>
@@ -274,7 +274,7 @@ export function NodeCatalogPanel({
           count={builtInItems.length}
           search={searchTerm}
           hidden={Boolean(searchTerm && !builtInItems.length)}
-          open={expandedCategories["builtin"] ?? true}
+          open={expandedCategories["builtin"] ?? false}
           onOpenChange={open => onSetCategoryOpen("builtin", open)}
         >
           {builtInByCategory.map(cat => (
@@ -284,7 +284,7 @@ export function NodeCatalogPanel({
               label={cat.label}
               count={cat.items.length}
               search={searchTerm}
-              open={expandedCategories[cat.id] ?? true}
+              open={expandedCategories[cat.id] ?? false}
               onOpenChange={open => onSetCategoryOpen(cat.id, open)}
             >
               <ul className="catalog-items-list">{cat.items.map(item => renderNodeRow(item))}</ul>
@@ -329,7 +329,7 @@ export function NodeCatalogPanel({
                   label={catName}
                   count={catItems.length}
                   search={searchTerm}
-                  open={expandedCategories[`script:${catName}`] ?? true}
+                  open={expandedCategories[`script:${catName}`] ?? false}
                   onOpenChange={open => onSetCategoryOpen(`script:${catName}`, open)}
                 >
                   <ul className="catalog-items-list">{catItems.map(item => renderNodeRow(item))}</ul>

@@ -27,7 +27,7 @@ const DEFAULT_STATE: WorkspaceUiState = {
   navExpanded: false,
   leftPanel: null,
   leftWidth: 288,
-  inspectorOpen: true,
+  inspectorOpen: false,
   inspectorWidth: 332,
   inspectorTab: "params",
   resultsOpen: false,
@@ -38,14 +38,16 @@ const DEFAULT_STATE: WorkspaceUiState = {
   favoriteNodes: [],
   recentNodes: [],
   expandedCategories: {
-    builtin: true,
-    "cat:input": true,
-    "cat:parse": true,
-    "cat:extract": true,
-    "cat:validate": true,
-    "cat:logic": true,
-    "cat:combine": true,
-    "cat:export": true,
+    fav: false,
+    recent: false,
+    builtin: false,
+    "cat:input": false,
+    "cat:parse": false,
+    "cat:extract": false,
+    "cat:validate": false,
+    "cat:logic": false,
+    "cat:combine": false,
+    "cat:export": false,
     personal: false,
     script: false,
   },
@@ -62,18 +64,13 @@ function loadUiState(hasRunParam: boolean): WorkspaceUiState {
     const parsed = JSON.parse(raw) as Partial<WorkspaceUiState>;
     return {
       ...DEFAULT_STATE,
-      ...parsed,
       leftWidth: clamp(Number(parsed.leftWidth ?? DEFAULT_STATE.leftWidth), 240, 420),
       inspectorWidth: clamp(Number(parsed.inspectorWidth ?? DEFAULT_STATE.inspectorWidth), 272, 460),
       resultsHeight: clamp(Number(parsed.resultsHeight ?? DEFAULT_STATE.resultsHeight), 160, 560),
-      resultsOpen: hasRunParam ? true : Boolean(parsed.resultsOpen),
-      resultsExpanded: false,
+      resultsOpen: hasRunParam,
       favoriteNodes: Array.isArray(parsed.favoriteNodes) ? parsed.favoriteNodes.filter((v): v is string => typeof v === "string").slice(0, 32) : [],
       recentNodes: Array.isArray(parsed.recentNodes) ? parsed.recentNodes.filter((v): v is string => typeof v === "string").slice(0, 8) : [],
-      expandedCategories: {
-        ...DEFAULT_STATE.expandedCategories,
-        ...(parsed.expandedCategories && typeof parsed.expandedCategories === "object" ? parsed.expandedCategories : {}),
-      },
+      expandedCategories: { ...DEFAULT_STATE.expandedCategories },
     };
   } catch {
     return { ...DEFAULT_STATE, resultsOpen: hasRunParam };
@@ -85,12 +82,18 @@ export function useWorkspaceUiState(hasRunParam: boolean) {
 
   useEffect(() => {
     try {
-      const { resultsExpanded: _ignore, ...persistable } = ui;
+      const persistable = {
+        leftWidth: ui.leftWidth,
+        inspectorWidth: ui.inspectorWidth,
+        resultsHeight: ui.resultsHeight,
+        favoriteNodes: ui.favoriteNodes,
+        recentNodes: ui.recentNodes,
+      };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable));
     } catch {
       // Ignore storage quota or private mode restrictions
     }
-  }, [ui]);
+  }, [ui.leftWidth, ui.inspectorWidth, ui.resultsHeight, ui.favoriteNodes, ui.recentNodes]);
 
   const patch = useCallback((change: Partial<WorkspaceUiState> | ((prev: WorkspaceUiState) => WorkspaceUiState)) => {
     setUi(prev => (typeof change === "function" ? change(prev) : { ...prev, ...change }));

@@ -33,6 +33,67 @@ export type GraphDiagnostic = {
   text: string;
 };
 
+export const FIELD_KEY_PATTERN = /^[A-Za-z0-9_-]{1,48}$/;
+
+export type ExtractionFieldIssue = {
+  keyError?: string;
+  labelsError?: string;
+};
+
+export function effectiveFieldLabels(field: ExtractionField): string[] {
+  return field.labelDraft === undefined
+    ? field.labels
+    : field.labelDraft.split(",").map(label => label.trim()).filter(Boolean);
+}
+
+export function getExtractionFieldIssues(extractionFields?: ExtractionField[]): {
+  nodeError?: string;
+  fields: ExtractionFieldIssue[];
+} {
+  if (!extractionFields?.length) {
+    return { nodeError: "Добавьте хотя бы одно поле", fields: [] };
+  }
+  const counts = new Map<string, number>();
+  for (const field of extractionFields) {
+    if (field.id) counts.set(field.id, (counts.get(field.id) ?? 0) + 1);
+  }
+  let hasKeyError = false;
+  let hasLabelsError = false;
+  const fieldIssues = extractionFields.map(field => {
+    const issue: ExtractionFieldIssue = {};
+    if (!field.id) {
+      issue.keyError = "Укажите ключ поля";
+    } else if (!FIELD_KEY_PATTERN.test(field.id)) {
+      issue.keyError = "Только латиница, цифры, _ и -";
+    } else if ((counts.get(field.id) ?? 0) > 1) {
+      issue.keyError = "Ключ поля повторяется";
+    }
+    const labels = effectiveFieldLabels(field);
+    if (!labels.length) {
+      issue.labelsError = "Укажите хотя бы одну подпись";
+    } else if (labels.length > 12 || labels.some(label => label.length > 80)) {
+      issue.labelsError = "Не более 12 подписей до 80 символов";
+    }
+    if (issue.keyError) hasKeyError = true;
+    if (issue.labelsError) hasLabelsError = true;
+    return issue;
+  });
+  const nodeError = hasKeyError && hasLabelsError
+    ? "Проверьте ключи и подписи"
+    : hasKeyError
+      ? "Проверьте ключи полей"
+      : hasLabelsError
+        ? "Укажите подписи полей"
+        : undefined;
+  return { nodeError, fields: fieldIssues };
+}
+
+export function invalidExtractNodeIds(graphNodes: EditorNode[]): string[] {
+  return graphNodes
+    .filter(node => node.data.schema.type === "extract" && Boolean(getExtractionFieldIssues(node.data.schema.fields).nodeError))
+    .map(node => node.id);
+}
+
 export function contractFields(): ExtractionField[] {
   return fields.map(({ id, type, labels }) => ({ id, type, labels: [...labels] }));
 }
@@ -276,8 +337,11 @@ export function useLiveGraph(vertical: boolean, catalog: CatalogItem[]) {
           items.push({ level: "error", nodeId: node.id, text: `Узел «${title(node)}»: не подключён обязательный вход «${portLabels[spec.input]}».` });
         }
       }
-      if (schema.type === "extract" && !(schema.fields?.length)) {
-        items.push({ level: "error", nodeId: node.id, text: `Узел «${title(node)}»: добавьте хотя бы одно поле извлечения.` });
+      if (schema.type === "extract") {
+        const extractIssue = getExtractionFieldIssues(schema.fields);
+        if (extractIssue.nodeError) {
+          items.push({ level: "error", nodeId: node.id, text: `Узел «${title(node)}»: ${extractIssue.nodeError.toLocaleLowerCase("ru")}.` });
+        }
       }
       if (schema.type === "branch" && !(schema.rules?.length)) {
         items.push({ level: "warning", nodeId: node.id, text: `Узел «${title(node)}»: задайте условия маршрутизации.` });

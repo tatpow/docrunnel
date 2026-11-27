@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import {
-  FileDoc, FilePdf, FolderOpen, Globe, MagnifyingGlass, UploadSimple, X,
+  FileDoc, FilePdf, FolderOpen, Globe, MagnifyingGlass, Trash, UploadSimple, X,
 } from "@phosphor-icons/react";
 import { ActionButton } from "../../control-help";
 import type { WorkflowVersionRef } from "../../workflow-tabs";
@@ -19,6 +19,7 @@ export function DocumentsContextPanel({
   onUpload,
   onToggleChoose,
   onSelectDoc,
+  onDeleteDoc,
   embedded = false,
   onClose,
 }: {
@@ -30,12 +31,15 @@ export function DocumentsContextPanel({
   onUpload: (files: FileList) => void;
   onToggleChoose: (id: string, checked: boolean) => void;
   onSelectDoc?: (doc: DocumentItem) => void;
+  onDeleteDoc?: (doc: DocumentItem) => void;
   embedded?: boolean;
   onClose?: () => void;
 }) {
   const [search, setSearch] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const term = search.trim().toLocaleLowerCase("ru");
+  const demoLimit = 3;
+  const demoFull = browserPreview && documents.length >= demoLimit;
 
   const nameCounts = useMemo(() => {
     const map = new Map<string, number>();
@@ -66,7 +70,7 @@ export function DocumentsContextPanel({
           multiple
           className="sr-only"
           aria-label="Добавить PDF или DOCX"
-          disabled={busy || browserPreview}
+          disabled={busy || demoFull}
           onChange={event => {
             const files = event.target.files;
             if (files?.length) onUpload(files);
@@ -78,12 +82,16 @@ export function DocumentsContextPanel({
           variant="outline"
           size="sm"
           className="w-full"
-          disabled={busy || browserPreview}
-          hint={browserPreview ? "Загрузка документов доступна в локальном Docker-режиме" : "Загрузить PDF с текстовым слоем или DOCX (до 20 МБ)"}
+          disabled={busy || demoFull}
+          hint={browserPreview
+            ? demoFull
+              ? "В веб-демо загружен максимум (3 файла). Удалите один файл, чтобы загрузить новый"
+              : "Загрузить до 3 файлов PDF с текстовым слоем или DOCX (обработка прямо в браузере)"
+            : "Загрузить PDF с текстовым слоем или DOCX (до 20 МБ)"}
           onClick={() => inputRef.current?.click()}
         >
           <UploadSimple size={15} />
-          <span>Добавить PDF или DOCX</span>
+          <span>{browserPreview ? `Добавить PDF или DOCX (${documents.length}/${demoLimit})` : "Добавить PDF или DOCX"}</span>
         </ActionButton>
       </div>
 
@@ -133,6 +141,20 @@ export function DocumentsContextPanel({
                       </span>
                     </span>
                   </button>
+                  {onDeleteDoc && (
+                    <ActionButton
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      className="doc-compact-delete"
+                      disabled={busy}
+                      aria-label={`Удалить документ «${doc.name}»`}
+                      hint="Удалить документ"
+                      onClick={() => onDeleteDoc(doc)}
+                    >
+                      <Trash size={14} />
+                    </ActionButton>
+                  )}
                 </div>
               );
             })}
@@ -140,7 +162,7 @@ export function DocumentsContextPanel({
         ) : (
           <p className="muted catalog-empty-note">
             {browserPreview
-              ? "Веб-демо позволяет собирать и сохранять схемы. Загрузка PDF/DOCX работает в локальном DocRunnel."
+              ? "Загрузите до 3 файлов PDF или DOCX для теста — обработка идёт прямо в браузере без отправки на сервер."
               : documents.length
                 ? "Документы по запросу не найдены."
                 : "Загрузите PDF или DOCX для предпросмотра и пакетного запуска."}

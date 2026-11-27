@@ -6,6 +6,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Separator } from "./components/ui/separator";
 import { ActionButton, FormField } from "./control-help";
 import { Input } from "./components/ui/input";
+import type { LeftPanelId } from "./workspace-state";
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
   SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider,
@@ -24,7 +25,8 @@ type ShellProps = {
   changeView: (admin: boolean) => void;
   account?: string;
   demo?: boolean;
-  section?: WorkspaceSection;
+  leftPanel?: LeftPanelId;
+  resultsOpen?: boolean;
   topBarContent?: ReactNode;
   onSection?: (section: WorkspaceSection) => void;
   signOut?: () => void;
@@ -90,7 +92,7 @@ function PasswordDialog({ open, onOpenChange, name, changePassword }: {
   </Dialog>;
 }
 
-function WorkspaceSidebar({ admin, canAdmin, changeView, signOut, account, changePassword, section, onSection }: Omit<ShellProps, "children">) {
+function WorkspaceSidebar({ admin, canAdmin, changeView, signOut, account, changePassword, leftPanel, resultsOpen = false, onSection }: Omit<ShellProps, "children">) {
   const { setOpenMobile } = useSidebar();
   const [passwordOpen, setPasswordOpen] = useState(false);
   const name = account ?? "Демо-пользователь";
@@ -99,20 +101,23 @@ function WorkspaceSidebar({ admin, canAdmin, changeView, signOut, account, chang
     setOpenMobile(false);
   }
   return <Sidebar side="left" collapsible={onSection ? "icon" : "offcanvas"}>
-    {!onSection && <SidebarHeader><div className="brand"><img src="/brand.png" alt="DocRunnel" /></div></SidebarHeader>}
+    {!onSection && <SidebarHeader><div className="brand"><img src={`${import.meta.env.BASE_URL}brand.png`} alt="DocRunnel" /></div></SidebarHeader>}
     <SidebarContent>
       <SidebarGroup>
         <SidebarGroupLabel>DocRunnel</SidebarGroupLabel>
         <SidebarGroupContent>
           <nav aria-label="Навигация">
             <SidebarMenu>
-              {onSection ? workspaceLinks.map(([id, label, Icon]) => <SidebarMenuItem key={id}>
-                <SidebarMenuButton isActive={!admin && id === section} aria-label={label} aria-pressed={id === section} title={id === "nodes" ? "Каталог узлов" : label}
-                  onClick={() => { navigate(false); onSection(id); }}><Icon aria-hidden="true" /><span>{id === "nodes" ? "Каталог узлов" : label}</span></SidebarMenuButton>
-              </SidebarMenuItem>) : <SidebarMenuItem><SidebarMenuButton isActive={!admin} aria-current={!admin ? "page" : undefined} aria-label="Рабочее место"
+              {onSection ? workspaceLinks.map(([id, label, Icon]) => {
+                const active = !admin && (id === "runs" ? resultsOpen : id === leftPanel);
+                return <SidebarMenuItem key={id}>
+                  <SidebarMenuButton isActive={active} aria-label={label} aria-pressed={active} title={id === "nodes" ? "Каталог узлов" : label}
+                    onClick={() => { navigate(false); onSection(id); }}><Icon weight={active ? "fill" : "regular"} aria-hidden="true" /><span>{id === "nodes" ? "Каталог узлов" : label}</span></SidebarMenuButton>
+                </SidebarMenuItem>;
+              }) : <SidebarMenuItem><SidebarMenuButton isActive={!admin} aria-current={!admin ? "page" : undefined} aria-label="Рабочее место"
                 onClick={() => navigate(false)}><span>Рабочее место</span></SidebarMenuButton></SidebarMenuItem>}
               {canAdmin && <SidebarMenuItem><SidebarMenuButton isActive={admin} aria-current={admin ? "page" : undefined} aria-label="Админ-панель"
-                onClick={() => navigate(true)}>{onSection && <ShieldCheck aria-hidden="true" />}<span>Админ-панель</span></SidebarMenuButton></SidebarMenuItem>}
+                onClick={() => navigate(true)}>{onSection && <ShieldCheck weight={admin ? "fill" : "regular"} aria-hidden="true" />}<span>Админ-панель</span></SidebarMenuButton></SidebarMenuItem>}
             </SidebarMenu>
           </nav>
         </SidebarGroupContent>
@@ -132,11 +137,11 @@ function WorkspaceSidebar({ admin, canAdmin, changeView, signOut, account, chang
 }
 
 export function WorkspaceShell({ children, account, demo, topBarContent, ...props }: ShellProps) {
-  return <SidebarProvider className={props.onSection ? "docrunnel-shell editor-shell" : "docrunnel-shell"} defaultOpen={!props.onSection} style={{ "--sidebar-width": "13rem", "--sidebar-width-icon": "3.75rem" } as CSSProperties}><WorkspaceSidebar {...props} account={account} />
+  return <SidebarProvider className={props.onSection ? "docrunnel-shell editor-shell" : "docrunnel-shell"} defaultOpen={false} style={{ "--sidebar-width": "13rem", "--sidebar-width-icon": "3.75rem" } as CSSProperties}><WorkspaceSidebar {...props} account={account} />
     <SidebarInset className="workspace-inset">
       <header className="workspace-header">
         <SidebarTrigger aria-label="Боковая панель" />
-        {props.onSection && <div className="brand editor-brand"><img src="/brand.png" alt="DocRunnel" /></div>}
+        {props.onSection && <div className="brand editor-brand"><img src={`${import.meta.env.BASE_URL}brand.png`} alt="DocRunnel" /></div>}
         <Separator orientation="vertical" />
         {!props.admin && topBarContent ? <div className="studio-topbar-center">{topBarContent}</div> : <span>{props.admin ? "Управление" : "Рабочее место"}</span>}
         <div className="workspace-actions">

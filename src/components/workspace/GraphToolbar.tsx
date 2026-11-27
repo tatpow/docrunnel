@@ -1,7 +1,8 @@
 import {
-  Eye, FloppyDisk, ListMagnifyingGlass, Play,
+  Eye, FloppyDisk, ListMagnifyingGlass, Play, Sparkle,
 } from "@phosphor-icons/react";
 import { ActionButton } from "../../control-help";
+import type { LMStatus } from "../../ai-graph-dialog";
 
 export function GraphToolbar({
   busy,
@@ -13,8 +14,10 @@ export function GraphToolbar({
   chosenCount,
   draftStatusLabel,
   dirty,
+  lmStatus,
 
   onOpenSearch,
+  onOpenAiGraph,
 
   onSaveDraft,
   onSaveVersion,
@@ -31,8 +34,10 @@ export function GraphToolbar({
   chosenCount: number;
   draftStatusLabel: string;
   dirty: boolean;
+  lmStatus?: LMStatus;
 
   onOpenSearch: () => void;
+  onOpenAiGraph?: () => void;
 
   onSaveDraft: () => void;
   onSaveVersion: () => void;
@@ -40,13 +45,11 @@ export function GraphToolbar({
   onRunPreviewQuick: () => void;
 
 }) {
-  const batchHint = browserPreview
-    ? "Запуск обработки доступен в локальном Docker-режиме"
-    : !canRunBatch
-      ? "Сохраните готовую версию схемы для пакетного запуска"
-      : chosenCount
-        ? `Запустить на выбранных документах (${chosenCount})`
-        : "Открыть выбор документов для запуска";
+  const batchHint = !canRunBatch
+    ? "Сохраните готовую версию схемы для пакетного запуска"
+    : chosenCount
+      ? `Запустить на выбранных документах (${chosenCount})${browserPreview ? " в браузере" : ""}`
+      : "Открыть выбор документов для запуска";
 
   return (
     <header className="studio-command-bar"><div className="toolbar">
@@ -62,6 +65,21 @@ export function GraphToolbar({
             <ListMagnifyingGlass size={15} />
             <span>Добавить узел</span>
           </ActionButton>
+          {onOpenAiGraph && (
+            <ActionButton
+              type="button"
+              variant="outline"
+              size="sm"
+              className="floating-btn"
+              disabled={busy}
+              hint={lmStatus?.connected ? `Подключена локальная модель: ${lmStatus.model ?? "LM"}` : "Подключить локальную LM (LM Studio / llama.cpp / Ollama) и создать схему по запросу и файлу"}
+              onClick={onOpenAiGraph}
+            >
+              <span className="lm-status-dot" data-connected={Boolean(lmStatus?.connected)} aria-hidden="true" />
+              <Sparkle size={15} />
+              <span>{lmStatus?.connected && lmStatus.model ? `LM · ${lmStatus.model.slice(0, 18)}` : "LM-схема"}</span>
+            </ActionButton>
+          )}
           <span className="draft-status-pill" data-dirty={dirty}>{draftStatusLabel}</span>
           <div className="command-spacer" />
           <ActionButton
@@ -93,8 +111,8 @@ export function GraphToolbar({
             variant="ghost"
             size="sm"
             className="floating-btn"
-            disabled={busy || browserPreview}
-            hint={browserPreview ? "Предпросмотр на документах доступен в локальном Docker-режиме" : "Выполнить предпросмотр на одном документе"}
+            disabled={busy}
+            hint={browserPreview ? "Выполнить предпросмотр на одном документе в браузере" : "Выполнить предпросмотр на одном документе"}
             onClick={onRunPreviewQuick}
           >
             <Eye size={15} />
@@ -107,7 +125,7 @@ export function GraphToolbar({
               variant="default"
               size="sm"
               className="split-run-main"
-              disabled={busy || browserPreview || !canRunBatch}
+              disabled={busy || !canRunBatch}
               hint={batchHint}
               onClick={onRunBatchQuick}
             >

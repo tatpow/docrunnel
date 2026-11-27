@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { DotsThree, PencilSimple, Plus, SquaresFour, X } from "@phosphor-icons/react";
+import { useRef, useState } from "react";
+import { DotsThree, DownloadSimple, PencilSimple, Plus, SquaresFour, UploadSimple, X } from "@phosphor-icons/react";
 import { ActionButton } from "../../control-help";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "../ui/dropdown-menu";
 import { Input } from "../ui/input";
@@ -20,6 +20,8 @@ export function WorkflowTabsBar({
   onNewTab,
   onRenameActive,
   onOpenTemplates,
+  onExportJson,
+  onImportJson,
 }: {
   tabs: TabSummary[];
   activeTabId: string;
@@ -29,8 +31,11 @@ export function WorkflowTabsBar({
   onNewTab: () => void;
   onRenameActive: (nextName: string) => void;
   onOpenTemplates: () => void;
+  onExportJson?: () => void;
+  onImportJson?: (file: File) => void;
 }) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  const importRef = useRef<HTMLInputElement>(null);
 
   return (
     <div className="wf-tabs-bar" role="tablist" aria-label="Открытые схемы">
@@ -125,8 +130,33 @@ export function WorkflowTabsBar({
           <DropdownMenuItem onSelect={onOpenTemplates}>
             <SquaresFour /> Библиотека шаблонов
           </DropdownMenuItem>
+          {(onExportJson || onImportJson) && <DropdownMenuSeparator />}
+          {onExportJson && (
+            <DropdownMenuItem onSelect={onExportJson}>
+              <DownloadSimple /> Экспорт схемы в JSON
+            </DropdownMenuItem>
+          )}
+          {onImportJson && (
+            <DropdownMenuItem onSelect={() => importRef.current?.click()}>
+              <UploadSimple /> Импорт схемы из JSON
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
+      {onImportJson && (
+        <input
+          ref={importRef}
+          type="file"
+          accept=".json,application/json"
+          className="sr-only"
+          aria-label="Импорт схемы из JSON"
+          onChange={event => {
+            const file = event.target.files?.[0];
+            if (file) onImportJson(file);
+            event.target.value = "";
+          }}
+        />
+      )}
     </div>
   );
 }

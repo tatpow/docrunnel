@@ -123,8 +123,9 @@ function StepNode({ id, data, selected }: NodeProps) {
   const summary = typeof data.summary === "string" ? data.summary : "";
   const isSelected = Boolean(selected || data.active);
   const missingInput = Boolean(data.missingInput);
+  const nodeError = typeof data.nodeError === "string" ? data.nodeError : "";
 
-  useEffect(() => update(id), [id, data.vertical, expanded, named, ports, summary, update]);
+  useEffect(() => update(id), [id, data.vertical, expanded, named, ports, summary, nodeError, update]);
 
   return (
     <Collapsible open={expanded}>
@@ -141,8 +142,8 @@ function StepNode({ id, data, selected }: NodeProps) {
           </div>
         </NodeToolbar>
       )}
-      <Card size="sm" className={isSelected ? "step-node selected" : "step-node"} data-kind={step.type} data-missing-input={missingInput}>
-        {step.id !== "input" && step.id !== "script" && step.id !== "table" && (!ports || data.vertical) &&
+      <Card size="sm" className={isSelected ? "step-node selected" : "step-node"} data-kind={step.type} data-missing-input={missingInput} data-error={Boolean(nodeError)}>
+        {step.id !== "input" && step.id !== "script" && step.id !== "table" && (!ports || Boolean(data.vertical)) &&
           <Handle type="target" data-port={ports?.input} position={data.vertical ? Position.Top : Position.Left} />}
         <div className="step-icon"><Icon size={15} /></div>
         <div className="step-copy">
@@ -165,9 +166,10 @@ function StepNode({ id, data, selected }: NodeProps) {
           {named && Object.entries(named.outputs).map(([port, spec]) =>
             <PortRow key={`out:${port}`} direction="source" kind={spec.type} handleId={port} name={port} />)}
         </dl>}
-        {step.id !== "branch" && step.id !== "export" && step.id !== "review" && step.id !== "script" && (!ports || data.vertical) &&
+        {step.id !== "branch" && step.id !== "export" && step.id !== "review" && step.id !== "script" && (!ports || Boolean(data.vertical)) &&
           <Handle type="source" data-port={ports?.output} position={data.vertical ? Position.Bottom : Position.Right} />}
-        {missingInput && <span className="step-issue"><WarningCircle size={12} weight="fill" aria-hidden="true" /> Подключите вход</span>}
+        {nodeError && <span className="step-issue step-issue-error"><WarningCircle size={12} weight="fill" aria-hidden="true" /> {nodeError}</span>}
+        {missingInput && nodeError !== "Подключите вход" && <span className="step-issue"><WarningCircle size={12} weight="fill" aria-hidden="true" /> Подключите вход</span>}
         <CollapsibleContent className="step-substeps"><ol>{step.substeps.map(item => <li key={item}>{item}</li>)}</ol></CollapsibleContent>
       </Card>
     </Collapsible>
