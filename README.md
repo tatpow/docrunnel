@@ -20,7 +20,8 @@ npm ci
 npm run build:preview
 ```
 
-- **GitHub Pages / GitFlic Pages / российский хостинг (без VPN)**: соберите `dist/` командой `npm run build:preview` и опубликуйте содержимое `web/dist`.
+- **GitHub Pages**: перенесите содержимое `web/` в корень репозитория для демо. Файлы `package.json`, `package-lock.json` и `.github/workflows/pages.yml` должны находиться по этим путям от корня. Workflow соберёт и опубликует `dist/`.
+- **GitFlic Pages / российский хостинг (без VPN)**: соберите `dist/` командой `npm run build:preview` и опубликуйте содержимое `web/dist`.
 - **Vercel**: укажите `web` в поле **Root Directory** (или выполните `npx vercel` из `web/`). Команда сборки — `npm run build:preview`, каталог вывода — `dist`, переменные окружения не требуются.
 
 Локальный просмотр демо:
